@@ -146,6 +146,149 @@ document.addEventListener('DOMContentLoaded', function() {
                     `;
                 }
                 break;
+            
+                case 'blacklist':
+                    if (data.blacklists && data.blacklists.length > 0) {
+                        resultsHTML = `
+                            <h5>Blacklist Check Results for ${data.target}</h5>
+                            <p>IP Address: ${data.ipAddress}</p>
+                            <p class="mb-3">
+                                <span class="badge bg-success">${data.cleanCount} Clean</span>
+                                <span class="badge bg-danger">${data.listedCount} Listed</span>
+                                ${data.errorCount > 0 ? `<span class="badge bg-warning">${data.errorCount} Errors</span>` : ''}
+                            </p>
+                            <div class="table-responsive">
+                                <table class="table table-bordered table-striped">
+                                    <thead>
+                                        <tr>
+                                            <th>Blacklist</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.blacklists.map(item => `
+                                            <tr>
+                                                <td>${item.blacklist}</td>
+                                                <td>
+                                                    <span class="badge ${item.listed ? 'bg-danger' : item.listed === false ? 'bg-success' : 'bg-warning'}">
+                                                        ${item.status}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `;
+                    } else {
+                        resultsHTML = `
+                            <div class="alert alert-warning">
+                                <h5>Blacklist Check Failed</h5>
+                                <p>Could not check blacklists for ${data.target}</p>
+                                ${data.error ? `<p>Error: ${data.error}</p>` : ''}
+                            </div>
+                        `;
+                    }
+                break;
+                
+                case 'dns-records':
+                if (data.records && data.records.length > 0) {
+                    resultsHTML = `
+                        <h5>Extended DNS Records for ${data.domain}</h5>
+                        <div class="accordion" id="dnsRecordsAccordion">
+                    `;
+                    
+                    // Loop through each record type
+                    data.records.forEach((recordType, index) => {
+                        const hasRecords = recordType.records && recordType.records.length > 0;
+                        
+                        resultsHTML += `
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="heading${recordType.type}">
+                                    <button class="accordion-button ${index > 0 ? 'collapsed' : ''}" type="button" 
+                                            data-bs-toggle="collapse" data-bs-target="#collapse${recordType.type}" 
+                                            aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="collapse${recordType.type}">
+                                        ${recordType.type} Records
+                                        ${!recordType.success ? '<span class="badge bg-danger ms-2">Error</span>' : ''}
+                                        ${recordType.success && !hasRecords ? '<span class="badge bg-warning ms-2">Not Found</span>' : ''}
+                                    </button>
+                                </h2>
+                                <div id="collapse${recordType.type}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}" 
+                                     aria-labelledby="heading${recordType.type}" data-bs-parent="#dnsRecordsAccordion">
+                                    <div class="accordion-body">
+                        `;
+                        
+                        if (!recordType.success) {
+                            resultsHTML += `<div class="alert alert-danger">Error: ${recordType.error}</div>`;
+                        } else if (!hasRecords) {
+                            resultsHTML += `<div class="alert alert-warning">No ${recordType.type} records found</div>`;
+                        } else {
+                            if (recordType.type === 'SOA') {
+                                // Special handling for SOA record which is an object
+                                const soa = recordType.records[0];
+                                resultsHTML += `
+                                    <table class="table table-bordered">
+                                        <tr><th>Primary NS</th><td>${soa.nsname}</td></tr>
+                                        <tr><th>Hostmaster</th><td>${soa.hostmaster}</td></tr>
+                                        <tr><th>Serial</th><td>${soa.serial}</td></tr>
+                                        <tr><th>Refresh</th><td>${soa.refresh}</td></tr>
+                                        <tr><th>Retry</th><td>${soa.retry}</td></tr>
+                                        <tr><th>Expire</th><td>${soa.expire}</td></tr>
+                                        <tr><th>Min TTL</th><td>${soa.minttl}</td></tr>
+                                    </table>
+                                `;
+                            } else if (recordType.type === 'CAA') {
+                                // Special handling for CAA records
+                                resultsHTML += `
+                                    <table class="table table-bordered">
+                                        <thead>
+                                            <tr>
+                                                <th>Flag</th>
+                                                <th>Tag</th>
+                                                <th>Value</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${recordType.records.map(record => `
+                                                <tr>
+                                                    <td>${record.critical}</td>
+                                                    <td>${record.tag}</td>
+                                                    <td>${record.value}</td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                `;
+                            } else {
+                                // Standard list for other record types
+                                resultsHTML += `
+                                    <ul class="list-group">
+                                        ${recordType.records.map(record => `
+                                            <li class="list-group-item">${record}</li>
+                                        `).join('')}
+                                    </ul>
+                                `;
+                            }
+                        }
+                        
+                        resultsHTML += `
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    resultsHTML += `</div>`;
+                } else {
+                    resultsHTML = `
+                        <div class="alert alert-warning">
+                            <h5>No DNS Records Found</h5>
+                            <p>Could not find DNS records for ${data.domain}</p>
+                            ${data.error ? `<p>Error: ${data.error}</p>` : ''}
+                        </div>
+                    `;
+                }
+                break;
         }
         
         resultsContent.innerHTML = resultsHTML;

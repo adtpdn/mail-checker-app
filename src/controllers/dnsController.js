@@ -59,7 +59,40 @@ const dnsController = {
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
+  },
+
+  // Blacklist Check
+  async checkBlacklists(req, res) {
+    try {
+      const { domain, ip } = req.query;
+      
+      if (!domain && !ip) {
+        return res.status(400).json({ error: 'Domain or IP address is required' });
+      }
+      
+      const target = domain || ip;
+      const blacklistResults = await lookupService.checkBlacklists(target);
+      return res.status(200).json({ target, ...blacklistResults });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  },
+
+  // Extended DNS Records
+  async getExtendedDNSRecords(req, res) {
+    try {
+      const { domain } = req.query;
+      if (!domain) {
+        return res.status(400).json({ error: 'Domain is required' });
+      }
+      
+      const dnsRecords = await lookupService.lookupExtendedDNS(domain);
+      return res.status(200).json({ domain, records: dnsRecords });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
   }
+
 };
 
 module.exports = dnsController;

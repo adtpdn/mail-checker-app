@@ -55,6 +55,19 @@
                                 DMARC Record
                             </label>
                         </div>
+                        <!-- New check types -->
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="checkType" id="blacklistCheck" value="blacklist">
+                            <label class="form-check-label" for="blacklistCheck">
+                                Blacklist Check
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="checkType" id="extendedDnsCheck" value="dns-records">
+                            <label class="form-check-label" for="extendedDnsCheck">
+                                Extended DNS Records
+                            </label>
+                        </div>
                     </div>
                     <button type="submit" class="btn btn-primary">Lookup</button>
                 </form>
