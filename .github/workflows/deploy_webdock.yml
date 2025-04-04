@@ -234,8 +234,7 @@ jobs:
             # Remove the tarball
             rm /tmp/mail-checker-app.tar.gz
             
-            echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-EOF
+            echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')" EOF
 
       - name: Verify deployment
         env:
