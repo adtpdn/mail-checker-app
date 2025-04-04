@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      deployment_note:
+        description: 'Notes about this deployment'
+        required: false
+        default: 'Manual deployment'
 
 jobs:
   deploy:
