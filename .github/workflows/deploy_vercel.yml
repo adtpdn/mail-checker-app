@@ -14,11 +14,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Deploy to Vercel
-        uses: vercel/actions/cli@master
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-args: '--prod'
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}  
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          working-directory: ./
+          node-version: '18'  
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Debug environment (no secrets)
+        run: |
+          echo "Node version: $(node -v)"
+          echo "NPM version: $(npm -v)"
+          echo "Current directory: $(pwd)"
+
+      - name: Deploy to Vercel
+        run: |
+          # Install Vercel CLI locally to avoid global installation issues
+          npx vercel@latest --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
