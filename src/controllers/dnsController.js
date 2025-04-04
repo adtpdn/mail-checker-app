@@ -71,10 +71,25 @@ const dnsController = {
       }
       
       const target = domain || ip;
-      const blacklistResults = await lookupService.checkBlacklists(target);
+      
+      // Create a promise that will timeout after 20 seconds
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Operation timed out')), 20000);
+      });
+      
+      // Race the actual operation against the timeout
+      const blacklistResults = await Promise.race([
+        lookupService.checkBlacklists(target),
+        timeoutPromise
+      ]);
+      
       return res.status(200).json({ target, ...blacklistResults });
     } catch (error) {
-      return res.status(500).json({ error: error.message });
+      console.error('Error in blacklist check:', error);
+      return res.status(500).json({ 
+        error: error.message,
+        target: req.query.domain || req.query.ip
+      });
     }
   },
 
@@ -86,10 +101,24 @@ const dnsController = {
         return res.status(400).json({ error: 'Domain is required' });
       }
       
-      const dnsRecords = await lookupService.lookupExtendedDNS(domain);
+      // Create a promise that will timeout after 20 seconds
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Operation timed out')), 20000);
+      });
+      
+      // Race the actual DNS lookup against the timeout
+      const dnsRecords = await Promise.race([
+        lookupService.lookupExtendedDNS(domain),
+        timeoutPromise
+      ]);
+      
       return res.status(200).json({ domain, records: dnsRecords });
     } catch (error) {
-      return res.status(500).json({ error: error.message });
+      console.error('Error in DNS records check:', error);
+      return res.status(500).json({ 
+        error: error.message,
+        domain: req.query.domain
+      });
     }
   }
 

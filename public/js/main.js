@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     <span class="visually-hidden">Loading...</span>
                 </div>
             </div>
+            <p class="text-center mt-3">This may take up to 15 seconds...</p>
         `;
         
         try {
@@ -37,10 +38,29 @@ document.addEventListener('DOMContentLoaded', function() {
                 const selector = document.getElementById('selector').value.trim() || 'default';
                 url += `&selector=${encodeURIComponent(selector)}`;
             }
+                 
+            // Set up timeout for fetch
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30-second timeout
             
-            const response = await fetch(url);
+            const response = await fetch(url, {
+                signal: controller.signal
+            }).catch(err => {
+                if (err.name === 'AbortError') {
+                    throw new Error('Request timed out after 30 seconds');
+                }
+                throw err;
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Server error: ${response.status} ${errorText}`);
+            }
+            
             const data = await response.json();
-            
+
             // Display results based on check type
             displayResults(checkType, data);
             
@@ -147,51 +167,64 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 break;
             
-                case 'blacklist':
-                    if (data.blacklists && data.blacklists.length > 0) {
-                        resultsHTML = `
-                            <h5>Blacklist Check Results for ${data.target}</h5>
-                            <p>IP Address: ${data.ipAddress}</p>
-                            <p class="mb-3">
-                                <span class="badge bg-success">${data.cleanCount} Clean</span>
-                                <span class="badge bg-danger">${data.listedCount} Listed</span>
-                                ${data.errorCount > 0 ? `<span class="badge bg-warning">${data.errorCount} Errors</span>` : ''}
-                            </p>
-                            <div class="table-responsive">
-                                <table class="table table-bordered table-striped">
-                                    <thead>
+            case 'blacklist':
+                if (data.blacklists && data.blacklists.length > 0) {
+                    resultsHTML = `
+                        <h5>Blacklist Check Results for ${data.target}</h5>
+                        <p>IP Address: ${data.ipAddress}</p>
+                        <div class="mb-3">
+                            <span class="badge bg-success">${data.cleanCount} Clean</span>
+                            <span class="badge bg-danger">${data.listedCount} Listed</span>
+                            ${data.errorCount > 0 ? `<span class="badge bg-warning">${data.errorCount} Errors</span>` : ''}
+                        </div>
+                        
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Blacklist</th>
+                                        <th>Description</th>
+                                        <th>Status</th>
+                                        <th>Details</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${data.blacklists.map(item => `
                                         <tr>
-                                            <th>Blacklist</th>
-                                            <th>Status</th>
+                                            <td>${item.blacklist}</td>
+                                            <td><small>${item.description || ''}</small></td>
+                                            <td>
+                                                <span class="badge ${item.listed ? 'bg-danger' : item.listed === false ? 'bg-success' : 'bg-warning'}">
+                                                    ${item.status}
+                                                </span>
+                                            </td>
+                                            <td>
+                                                ${item.reason ? `<small>${item.reason}</small>` : ''}
+                                                ${item.error ? `<small class="text-danger">Error: ${item.error}</small>` : ''}
+                                            </td>
                                         </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${data.blacklists.map(item => `
-                                            <tr>
-                                                <td>${item.blacklist}</td>
-                                                <td>
-                                                    <span class="badge ${item.listed ? 'bg-danger' : item.listed === false ? 'bg-success' : 'bg-warning'}">
-                                                        ${item.status}
-                                                    </span>
-                                                </td>
-                                            </tr>
-                                        `).join('')}
-                                    </tbody>
-                                </table>
-                            </div>
-                        `;
-                    } else {
-                        resultsHTML = `
-                            <div class="alert alert-warning">
-                                <h5>Blacklist Check Failed</h5>
-                                <p>Could not check blacklists for ${data.target}</p>
-                                ${data.error ? `<p>Error: ${data.error}</p>` : ''}
-                            </div>
-                        `;
-                    }
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="alert alert-info mt-3">
+                            <h6>About Blacklists</h6>
+                            <p>Being listed on a blacklist doesn't automatically mean your mail will be blocked, but it may affect deliverability.</p>
+                            <p>If you're listed, you can visit the blacklist provider's website to learn about their delisting process.</p>
+                        </div>
+                    `;
+                } else {
+                    resultsHTML = `
+                        <div class="alert alert-warning">
+                            <h5>Blacklist Check Failed</h5>
+                            <p>Could not check blacklists for ${data.target}</p>
+                            ${data.error ? `<p>Error: ${data.error}</p>` : ''}
+                        </div>
+                    `;
+                }
                 break;
                 
-                case 'dns-records':
+            case 'dns-records':
                 if (data.records && data.records.length > 0) {
                     resultsHTML = `
                         <h5>Extended DNS Records for ${data.domain}</h5>

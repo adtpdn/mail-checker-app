@@ -30,3 +30,62 @@ pre {
     white-space: pre-wrap;
     word-break: break-all;
 }
+
+/* Improved styling for blacklist results */
+.blacklist-table tr.listed {
+    background-color: rgba(255, 0, 0, 0.05);
+}
+
+.blacklist-table tr.clean {
+    background-color: rgba(0, 255, 0, 0.05);
+}
+
+/* Pulse animation for loading states */
+@keyframes pulse {
+    0% { opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { opacity: 0.6; }
+}
+
+.loading-pulse {
+    animation: pulse 1.5s infinite ease-in-out;
+}
+
+/* Improved accordion styling */
+.accordion-button:not(.collapsed) {
+    background-color: rgba(13, 110, 253, 0.1);
+    color: #0d6efd;
+}
+
+.accordion-button:focus {
+    box-shadow: none;
+    border-color: rgba(0, 0, 0, 0.125);
+}
+
+/* Tooltip styling */
+.tooltip-wrapper {
+    position: relative;
+    display: inline-block;
+}
+
+.tooltip-wrapper .tooltip-content {
+    visibility: hidden;
+    width: 200px;
+    background-color: #555;
+    color: #fff;
+    text-align: center;
+    border-radius: 6px;
+    padding: 5px;
+    position: absolute;
+    z-index: 1;
+    bottom: 125%;
+    left: 50%;
+    margin-left: -100px;
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.tooltip-wrapper:hover .tooltip-content {
+    visibility: visible;
+    opacity: 1;
+}
