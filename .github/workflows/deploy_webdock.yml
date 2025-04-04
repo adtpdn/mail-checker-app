@@ -1,4 +1,4 @@
-name: Deploy Mail Checker to Webdock
+name: Deploy Mail Checker to Webdock with Nginx
 
 on:
   push:
@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v3
@@ -31,15 +33,87 @@ jobs:
       - name: Run tests
         run: npm test || echo "No tests specified"
 
+      - name: Add version info
+        run: |
+          echo "Version: $(git describe --always --tags || echo 'v0.1.0')" > VERSION
+          echo "Commit: $(git rev-parse HEAD)" >> VERSION
+          echo "Branch: $(git rev-parse --abbrev-ref HEAD)" >> VERSION
+          echo "Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> VERSION
+
       - name: Create deployment artifact
         run: |
-          # Create a tarball excluding development files
-          tar -czf mail-checker-app.tar.gz \
+          # Create a temporary directory for the build
+          mkdir -p /tmp/mail-checker-build
+          
+          # Copy files to the temp directory, excluding what we don't need
+          rsync -av \
             --exclude=".git" \
             --exclude=".github" \
             --exclude="node_modules" \
             --exclude="tests" \
-            .
+            --exclude="coverage" \
+            . /tmp/mail-checker-build/
+          
+          # Create the tarball from the temp directory
+          tar -czf mail-checker-app.tar.gz -C /tmp/mail-checker-build .
+
+      - name: Create Nginx configuration
+        run: |
+          # Create basic Nginx configuration
+          cat > mail-checker.conf << 'EOL'
+          server {
+              listen 80;
+              server_name ${DOMAIN_NAME};
+
+              access_log /var/log/nginx/mail-checker-access.log;
+              error_log /var/log/nginx/mail-checker-error.log;
+
+              root /var/www/mail-checker/current/public;
+              index index.html;
+
+              # Security headers
+              add_header X-Content-Type-Options "nosniff" always;
+              add_header X-XSS-Protection "1; mode=block" always;
+              add_header X-Frame-Options "SAMEORIGIN" always;
+
+              # Enable gzip compression
+              gzip on;
+              gzip_comp_level 5;
+              gzip_min_length 256;
+              gzip_proxied any;
+              gzip_vary on;
+              gzip_types
+                  application/javascript
+                  application/json
+                  application/x-javascript
+                  application/xml
+                  text/css
+                  text/javascript
+                  text/plain
+                  text/xml;
+
+              # Handle static files with cache
+              location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
+                  expires 30d;
+                  add_header Cache-Control "public, no-transform";
+              }
+
+              # Proxy all requests to Node.js application
+              location / {
+                  proxy_pass http://localhost:3000;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection 'upgrade';
+                  proxy_set_header Host $host;
+                  proxy_cache_bypass $http_upgrade;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+          EOL
+        env:
+          DOMAIN_NAME: ${{ secrets.DOMAIN_NAME || 'mail-checker.yourdomain.com' }}
 
       - name: Set up SSH
         uses: webfactory/ssh-agent@v0.8.0
@@ -51,63 +125,132 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.WEBDOCK_HOST_KEY }}" >> ~/.ssh/known_hosts
 
+      - name: Copy files to server
+        env:
+          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
+          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
+        run: |
+          # Copy deployment artifact to server
+          scp mail-checker-app.tar.gz ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER}:/tmp/
+          
+          # Copy Nginx configuration to server
+          scp mail-checker.conf ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER}:/tmp/
+
       - name: Deploy to Webdock
         env:
           WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
           WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
-          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH }}
+          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/var/www/mail-checker' }}
+          DOMAIN_NAME: ${{ secrets.DOMAIN_NAME || 'mail-checker.yourdomain.com' }}
           DEPLOY_TIMESTAMP: "$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
           DEPLOY_USER: "${{ github.actor }}"
         run: |
-          # Log deployment start
-          echo "Starting deployment to Webdock at ${DEPLOY_TIMESTAMP}"
-          
-          # Copy deployment artifact to server
-          scp mail-checker-app.tar.gz ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER}:/tmp/
-          
           # Execute remote deployment commands
           ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} << 'EOF'
-            # Create deployment directory if it doesn't exist
-            mkdir -p ${DEPLOY_PATH}
+            # Set up environment variables
+            DEPLOY_PATH="${DEPLOY_PATH}"
+            TIMESTAMP=$(date +%Y%m%d%H%M%S)
+            RELEASE_DIR="${DEPLOY_PATH}/releases/${TIMESTAMP}"
             
-            # Extract the tarball to the deployment directory
-            cd ${DEPLOY_PATH}
-            
-            # Backup the .env file if it exists
-            if [ -f .env ]; then
-              cp .env .env.backup
+            # Install Nginx if not already installed
+            if ! command -v nginx &> /dev/null; then
+                echo "Installing Nginx..."
+                sudo apt update
+                sudo apt install -y nginx
             fi
             
-            # Extract the new version
-            tar -xzf /tmp/mail-checker-app.tar.gz
+            # Create directory structure
+            echo "Creating directory structure..."
+            mkdir -p ${DEPLOY_PATH}/releases
+            mkdir -p ${DEPLOY_PATH}/shared/node_modules
+            mkdir -p ${DEPLOY_PATH}/shared/logs
             
-            # Restore the .env file if backed up
-            if [ -f .env.backup ]; then
-              cp .env.backup .env
+            # Extract the new release
+            echo "Extracting new release..."
+            mkdir -p ${RELEASE_DIR}
+            tar -xzf /tmp/mail-checker-app.tar.gz -C ${RELEASE_DIR}
+            
+            # Link shared directories
+            echo "Setting up shared resources..."
+            ln -sfn ${DEPLOY_PATH}/shared/node_modules ${RELEASE_DIR}/node_modules
+            ln -sfn ${DEPLOY_PATH}/shared/logs ${RELEASE_DIR}/logs
+            
+            # Copy .env from previous release if it exists
+            if [ -L ${DEPLOY_PATH}/current ] && [ -f ${DEPLOY_PATH}/current/.env ]; then
+                cp ${DEPLOY_PATH}/current/.env ${RELEASE_DIR}/.env
             fi
-            
-            # Install dependencies
-            npm ci --production
             
             # Update environment variables
-            echo "DEPLOY_TIMESTAMP=${DEPLOY_TIMESTAMP}" >> .env
-            echo "DEPLOY_USER=${DEPLOY_USER}" >> .env
+            echo "Updating environment variables..."
+            echo "DEPLOY_TIMESTAMP=${DEPLOY_TIMESTAMP}" >> ${RELEASE_DIR}/.env
+            echo "DEPLOY_USER=${DEPLOY_USER}" >> ${RELEASE_DIR}/.env
+            
+            # Install dependencies
+            echo "Installing dependencies..."
+            cd ${RELEASE_DIR}
+            npm ci --production
+            
+            # Set up Nginx
+            echo "Configuring Nginx..."
+            sudo cp /tmp/mail-checker.conf /etc/nginx/sites-available/mail-checker
+            sudo sed -i "s/\${DOMAIN_NAME}/${DOMAIN_NAME}/g" /etc/nginx/sites-available/mail-checker
+            
+            # Enable the site if not already enabled
+            if [ ! -f /etc/nginx/sites-enabled/mail-checker ]; then
+                sudo ln -sf /etc/nginx/sites-available/mail-checker /etc/nginx/sites-enabled/
+            fi
+            
+            # Test and reload Nginx
+            echo "Testing Nginx configuration..."
+            sudo nginx -t
+            if [ $? -eq 0 ]; then
+                echo "Reloading Nginx..."
+                sudo systemctl reload nginx
+            else
+                echo "Nginx configuration test failed. Please check the configuration."
+            fi
+            
+            # Update current symlink
+            echo "Updating current symlink..."
+            ln -sfn ${RELEASE_DIR} ${DEPLOY_PATH}/current
             
             # Restart the application using PM2
-            # If the app is not registered in PM2 yet, start it
+            echo "Restarting application..."
+            cd ${DEPLOY_PATH}/current
             if pm2 list | grep -q "mail-checker"; then
-              pm2 reload mail-checker
+                pm2 reload mail-checker --update-env
             else
-              pm2 start server.js --name mail-checker
+                pm2 start server.js --name mail-checker
             fi
             
             # Save PM2 configuration
             pm2 save
             
-            # Clean up
+            # Clean up old releases (keep last 5)
+            echo "Cleaning up old releases..."
+            cd ${DEPLOY_PATH}/releases
+            ls -1d */ | sort -r | tail -n +6 | xargs rm -rf 2>/dev/null || echo "No old releases to clean up"
+            
+            # Remove the tarball
             rm /tmp/mail-checker-app.tar.gz
             
             echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-          EOF
+EOF
+
+      - name: Verify deployment
+        env:
+          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
+        run: |
+          # Wait a moment for the application to start
+          sleep 10
           
-          echo "Deployment completed successfully"
+          # Check if the application is responding
+          echo "Checking application status..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" http://${WEBDOCK_SERVER} || echo "Failed to connect")
+          
+          echo "HTTP response code: $response"
+          if [[ "$response" == "200" ]]; then
+            echo "✅ Application is running correctly!"
+          else
+            echo "⚠️ Application responded with HTTP code: $response"
+          fi
