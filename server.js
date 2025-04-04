@@ -12,16 +12,6 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Increase the server timeout for long-running requests
-app.use((req, res, next) => {
-  // Set timeout to 30 seconds for API requests
-  if (req.url.startsWith('/api/')) {
-    req.setTimeout(30000);
-    res.setTimeout(30000);
-  }
-  next();
-});
-
 // Add basic request logging
 app.use((req, res, next) => {
   const start = Date.now();
@@ -32,8 +22,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// API Routes
-app.use('/api', apiRoutes);
+// API Routes with timeout handling
+app.use('/api', (req, res, next) => {
+  // Set timeout for API requests
+  req.setTimeout(25000); // 25 seconds
+  res.setTimeout(25000);
+  next();
+}, apiRoutes);
 
 // Serve the main HTML file for any other route
 app.get('*', (req, res) => {
@@ -49,6 +44,12 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// For Vercel serverless deployment
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
+// Export for serverless use
+module.exports = app;
