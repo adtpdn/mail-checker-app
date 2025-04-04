@@ -1,0 +1,113 @@
+name: Deploy Mail Checker to Webdock
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      deployment_note:
+        description: 'Deployment notes'
+        required: false
+        default: 'Manual deployment'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test || echo "No tests specified"
+
+      - name: Create deployment artifact
+        run: |
+          # Create a tarball excluding development files
+          tar -czf mail-checker-app.tar.gz \
+            --exclude=".git" \
+            --exclude=".github" \
+            --exclude="node_modules" \
+            --exclude="tests" \
+            .
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.WEBDOCK_SSH_PRIVATE_KEY }}
+          
+      - name: Add Webdock host to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.WEBDOCK_HOST_KEY }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy to Webdock
+        env:
+          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
+          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
+          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH }}
+          DEPLOY_TIMESTAMP: "$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          DEPLOY_USER: "${{ github.actor }}"
+        run: |
+          # Log deployment start
+          echo "Starting deployment to Webdock at ${DEPLOY_TIMESTAMP}"
+          
+          # Copy deployment artifact to server
+          scp mail-checker-app.tar.gz ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER}:/tmp/
+          
+          # Execute remote deployment commands
+          ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} << 'EOF'
+            # Create deployment directory if it doesn't exist
+            mkdir -p ${DEPLOY_PATH}
+            
+            # Extract the tarball to the deployment directory
+            cd ${DEPLOY_PATH}
+            
+            # Backup the .env file if it exists
+            if [ -f .env ]; then
+              cp .env .env.backup
+            fi
+            
+            # Extract the new version
+            tar -xzf /tmp/mail-checker-app.tar.gz
+            
+            # Restore the .env file if backed up
+            if [ -f .env.backup ]; then
+              cp .env.backup .env
+            fi
+            
+            # Install dependencies
+            npm ci --production
+            
+            # Update environment variables
+            echo "DEPLOY_TIMESTAMP=${DEPLOY_TIMESTAMP}" >> .env
+            echo "DEPLOY_USER=${DEPLOY_USER}" >> .env
+            
+            # Restart the application using PM2
+            # If the app is not registered in PM2 yet, start it
+            if pm2 list | grep -q "mail-checker"; then
+              pm2 reload mail-checker
+            else
+              pm2 start server.js --name mail-checker
+            fi
+            
+            # Save PM2 configuration
+            pm2 save
+            
+            # Clean up
+            rm /tmp/mail-checker-app.tar.gz
+            
+            echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          EOF
+          
+          echo "Deployment completed successfully"
