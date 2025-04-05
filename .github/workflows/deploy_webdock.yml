@@ -32,79 +32,88 @@ jobs:
             UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
 
-      - name: Prepare deployment
+      - name: Create temporary deployment package
+        run: |
+          # Clean up node_modules if it exists
+          rm -rf node_modules
+          
+          # Create a zip file of the project
+          zip -r deploy.zip . -x ".git/*" ".github/*" "node_modules/*" "tests/*" "coverage/*"
+      
+      - name: Get current date
+        id: date
+        run: echo "DEPLOY_DATE=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+      
+      - name: Deploy via SSH
         env:
           WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
           WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
           DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/home/webdock/mail-checker' }}
+          DEPLOY_DATE: ${{ steps.date.outputs.DEPLOY_DATE }}
+          DEPLOY_USER: ${{ github.actor }}
         run: |
-          # Check if we can access the deployment directory and create it if needed
-          ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} "mkdir -p ${DEPLOY_PATH}"
+          # Upload zip file to server
+          echo "Uploading deployment package..."
+          scp deploy.zip ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER}:/tmp/
           
-          # Backup .env file if it exists
-          ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} "if [ -f ${DEPLOY_PATH}/.env ]; then cp ${DEPLOY_PATH}/.env ${DEPLOY_PATH}/.env.backup; echo 'Environment file backed up'; else echo 'No environment file found to back up'; fi"
-          
-          echo "Deployment preparation complete"
-
-      - name: Deploy code to Webdock
-        env:
-          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
-          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
-          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/home/webdock/mail-checker' }}
-        run: |
-          # Deploy to server using rsync with appropriate flags
-          echo "Deploying code to Webdock..."
-          
-          # Create necessary directories locally first
-          mkdir -p public/css public/js src
-          
-          # Use --no-perms to avoid permission issues
-          rsync -avz --exclude='.git' --exclude='.github' --exclude='node_modules' \
-            --exclude='tests' --exclude='coverage' --no-perms \
-            ./ ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER}:${DEPLOY_PATH}/
-          
-          echo "Code transfer complete"
-
-      - name: Post-deployment setup
-        env:
-          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
-          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
-          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/home/webdock/mail-checker' }}
-        run: |
-          DEPLOY_TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
-          DEPLOY_USER="${{ github.actor }}"
-          
-          # Execute post-deploy commands
+          # Execute deployment script on server
+          echo "Deploying to server..."
           ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} << EOF
-            cd ${DEPLOY_PATH}
+            # Create a fresh deployment directory
+            echo "Creating deployment directory..."
+            DEPLOY_DIR="${DEPLOY_PATH}"
             
-            # Restore the .env file if backup exists
-            if [ -f .env.backup ]; then
-              cp .env.backup .env
-              rm .env.backup
-              echo "Environment file restored"
-            else
-              # Create .env if it doesn't exist
-              echo "NODE_ENV=production" > .env
-              echo "PORT=3000" >> .env
+            # Create directory if it doesn't exist
+            mkdir -p \$DEPLOY_DIR
+            
+            # Create a backup of .env if it exists
+            if [ -f \$DEPLOY_DIR/.env ]; then
+              echo "Backing up .env file..."
+              cp \$DEPLOY_DIR/.env /tmp/.env.backup
             fi
             
-            # Update deployment info in .env
-            grep -v "DEPLOY_TIMESTAMP" .env > .env.tmp || true
-            grep -v "DEPLOY_USER" .env.tmp > .env || true
-            echo "DEPLOY_TIMESTAMP=${DEPLOY_TIMESTAMP}" >> .env
-            echo "DEPLOY_USER=${DEPLOY_USER}" >> .env
-            rm -f .env.tmp
+            # Extract zip file to deployment directory
+            echo "Extracting deployment package..."
+            # Clean the directory but preserve node_modules if it exists
+            if [ -d \$DEPLOY_DIR/node_modules ]; then
+              mv \$DEPLOY_DIR/node_modules /tmp/node_modules
+            fi
             
-            # Create necessary directories if they don't exist
-            mkdir -p public/css public/js src
+            # Clean the directory
+            rm -rf \$DEPLOY_DIR/*
+            
+            # Extract the zip file
+            unzip -o /tmp/deploy.zip -d \$DEPLOY_DIR
+            
+            # Restore node_modules if it was moved
+            if [ -d /tmp/node_modules ]; then
+              mv /tmp/node_modules \$DEPLOY_DIR/
+            fi
+            
+            # Restore or create .env file
+            if [ -f /tmp/.env.backup ]; then
+              echo "Restoring .env file..."
+              cp /tmp/.env.backup \$DEPLOY_DIR/.env
+              rm /tmp/.env.backup
+            else
+              echo "Creating new .env file..."
+              echo "NODE_ENV=production" > \$DEPLOY_DIR/.env
+              echo "PORT=3000" >> \$DEPLOY_DIR/.env
+            fi
+            
+            # Update deployment information
+            echo "DEPLOY_TIMESTAMP=${DEPLOY_DATE}" >> \$DEPLOY_DIR/.env
+            echo "DEPLOY_USER=${DEPLOY_USER}" >> \$DEPLOY_DIR/.env
+            
+            # Go to deployment directory
+            cd \$DEPLOY_DIR
             
             # Install dependencies
             echo "Installing dependencies..."
             npm ci --production
             
-            # Restart the application using PM2
-            echo "Restarting application..."
+            # Start or reload application
+            echo "Starting application..."
             if pm2 list | grep -q "mail-checker"; then
               pm2 reload mail-checker --update-env
             else
@@ -112,5 +121,8 @@ jobs:
               pm2 save
             fi
             
-            echo "Deployment completed at ${DEPLOY_TIMESTAMP}"
+            # Clean up
+            rm /tmp/deploy.zip
+            
+            echo "Deployment completed at ${DEPLOY_DATE}"
             EOF
