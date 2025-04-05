@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Set up SSH key
         uses: webfactory/ssh-agent@v0.8.0
@@ -31,70 +33,63 @@ jobs:
             StrictHostKeyChecking no
             UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
-
-      - name: Create temporary deployment package
-        run: |
-          # Clean up node_modules if it exists
-          rm -rf node_modules
-          
-          # Create a zip file of the project
-          zip -r deploy.zip . -x ".git/*" ".github/*" "node_modules/*" "tests/*" "coverage/*"
       
       - name: Get current date
         id: date
         run: echo "DEPLOY_DATE=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
       
-      - name: Deploy via SSH
+      - name: Deploy via Git
         env:
           WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
           WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
-          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/home/webdock/mail-checker' }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '~/mail-checker' }}
           DEPLOY_DATE: ${{ steps.date.outputs.DEPLOY_DATE }}
           DEPLOY_USER: ${{ github.actor }}
+          GIT_REPO: ${{ github.server_url }}/${{ github.repository }}
+          GIT_BRANCH: ${{ github.ref_name }}
         run: |
-          # Upload zip file to server
-          echo "Uploading deployment package..."
-          scp deploy.zip ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER}:/tmp/
-          
           # Execute deployment script on server
-          echo "Deploying to server..."
+          echo "Setting up Git-based deployment..."
           ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} << EOF
-            # Create a fresh deployment directory
-            echo "Creating deployment directory..."
-            DEPLOY_DIR="${DEPLOY_PATH}"
+            # Set default deployment path to user's home directory if not specified
+            DEPLOY_DIR=\$(eval echo ${DEPLOY_PATH})
+            echo "Deploying to: \$DEPLOY_DIR"
             
-            # Create directory if it doesn't exist
+            # Create directory if it doesn't exist and initialize git repo if needed
             mkdir -p \$DEPLOY_DIR
             
-            # Create a backup of .env if it exists
+            # Backup .env file if it exists
             if [ -f \$DEPLOY_DIR/.env ]; then
               echo "Backing up .env file..."
-              cp \$DEPLOY_DIR/.env /tmp/.env.backup
+              cp \$DEPLOY_DIR/.env \$DEPLOY_DIR/.env.backup
             fi
             
-            # Extract zip file to deployment directory
-            echo "Extracting deployment package..."
-            # Clean the directory but preserve node_modules if it exists
-            if [ -d \$DEPLOY_DIR/node_modules ]; then
-              mv \$DEPLOY_DIR/node_modules /tmp/node_modules
+            # Go to deployment directory
+            cd \$DEPLOY_DIR
+            
+            # Initialize git repo if it doesn't exist
+            if [ ! -d .git ]; then
+              echo "Initializing git repository..."
+              git init
+              git config --local user.email "deployment@mail-checker.app"
+              git config --local user.name "Deployment Bot"
+              # Add GitHub as origin
+              git remote add origin ${GIT_REPO} || git remote set-url origin ${GIT_REPO}
             fi
             
-            # Clean the directory
-            rm -rf \$DEPLOY_DIR/*
+            # Fetch latest code
+            echo "Fetching latest code..."
+            git fetch --depth=1 origin ${GIT_BRANCH}
             
-            # Extract the zip file
-            unzip -o /tmp/deploy.zip -d \$DEPLOY_DIR
+            # Reset to match remote
+            echo "Resetting to match remote branch..."
+            git reset --hard origin/${GIT_BRANCH}
             
-            # Restore node_modules if it was moved
-            if [ -d /tmp/node_modules ]; then
-              mv /tmp/node_modules \$DEPLOY_DIR/
-            fi
-            
-            # Restore or create .env file
-            if [ -f /tmp/.env.backup ]; then
+            # Restore .env file if it exists
+            if [ -f \$DEPLOY_DIR/.env.backup ]; then
               echo "Restoring .env file..."
-              cp /tmp/.env.backup \$DEPLOY_DIR/.env
-              rm /tmp/.env.backup
+              cp \$DEPLOY_DIR/.env.backup \$DEPLOY_DIR/.env
+              rm \$DEPLOY_DIR/.env.backup
             else
               echo "Creating new .env file..."
               echo "NODE_ENV=production" > \$DEPLOY_DIR/.env
@@ -102,18 +97,16 @@ jobs:
             fi
             
             # Update deployment information
+            echo "Updating deployment info..."
             echo "DEPLOY_TIMESTAMP=${DEPLOY_DATE}" >> \$DEPLOY_DIR/.env
             echo "DEPLOY_USER=${DEPLOY_USER}" >> \$DEPLOY_DIR/.env
             
-            # Go to deployment directory
-            cd \$DEPLOY_DIR
-            
             # Install dependencies
             echo "Installing dependencies..."
-            npm ci --production
+            npm install --production
             
             # Start or reload application
-            echo "Starting application..."
+            echo "Starting/reloading application..."
             if pm2 list | grep -q "mail-checker"; then
               pm2 reload mail-checker --update-env
             else
@@ -121,8 +114,5 @@ jobs:
               pm2 save
             fi
             
-            # Clean up
-            rm /tmp/deploy.zip
-            
             echo "Deployment completed at ${DEPLOY_DATE}"
-            EOF
+          EOF
