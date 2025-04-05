@@ -32,71 +32,44 @@ jobs:
             UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
 
-      - name: Create deployment directory and set correct permissions
+      - name: Prepare deployment
         env:
           WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
           WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
-          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/var/www/mail-checker' }}
+          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/home/webdock/mail-checker' }}
         run: |
-          # Create proper directory structure and set permissions first
-          ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} << 'EOF'
-            # Create deployment directory if it doesn't exist
-            sudo mkdir -p ${DEPLOY_PATH}
-            
-            # Fix ownership to ensure current user can write to it
-            sudo chown -R $(whoami):$(whoami) ${DEPLOY_PATH}
-            
-            # Set proper permissions
-            sudo chmod -R 755 ${DEPLOY_PATH}
-            
-            # Create public directory if it doesn't exist
-            mkdir -p ${DEPLOY_PATH}/public
-            mkdir -p ${DEPLOY_PATH}/public/css
-            mkdir -p ${DEPLOY_PATH}/public/js
-            mkdir -p ${DEPLOY_PATH}/src
-            
-            echo "Deployment directory prepared with correct permissions"
-            EOF
-
-      - name: Back up environment file
-        env:
-          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
-          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
-          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/var/www/mail-checker' }}
-        run: |
-          # Backup .env file if it exists
-          ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} << 'EOF'
-            if [ -f ${DEPLOY_PATH}/.env ]; then
-              cp ${DEPLOY_PATH}/.env ${DEPLOY_PATH}/.env.backup
-              echo "Environment file backed up"
-            else
-              echo "No environment file found to back up"
-            fi
-          EOF
-
-      - name: Deploy directly to Webdock
-        env:
-          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
-          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
-          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/var/www/mail-checker' }}
-        run: |
-          # Get deployment timestamp
-          DEPLOY_TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
-          DEPLOY_USER="${{ github.actor }}"
+          # Check if we can access the deployment directory and create it if needed
+          ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} "mkdir -p ${DEPLOY_PATH}"
           
+          # Backup .env file if it exists
+          ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} "if [ -f ${DEPLOY_PATH}/.env ]; then cp ${DEPLOY_PATH}/.env ${DEPLOY_PATH}/.env.backup; echo 'Environment file backed up'; else echo 'No environment file found to back up'; fi"
+          
+          echo "Deployment preparation complete"
+
+      - name: Deploy code to Webdock
+        env:
+          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
+          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
+          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/home/webdock/mail-checker' }}
+        run: |
           # Deploy to server using rsync with appropriate flags
           echo "Deploying code to Webdock..."
+          
+          # Create necessary directories locally first
+          mkdir -p public/css public/js src
+          
+          # Use --no-perms to avoid permission issues
           rsync -avz --exclude='.git' --exclude='.github' --exclude='node_modules' \
-            --exclude='tests' --exclude='coverage' \
+            --exclude='tests' --exclude='coverage' --no-perms \
             ./ ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER}:${DEPLOY_PATH}/
           
           echo "Code transfer complete"
 
-      - name: Restore environment file and run post-deployment steps
+      - name: Post-deployment setup
         env:
           WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
           WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
-          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/var/www/mail-checker' }}
+          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/home/webdock/mail-checker' }}
         run: |
           DEPLOY_TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
           DEPLOY_USER="${{ github.actor }}"
@@ -117,10 +90,14 @@ jobs:
             fi
             
             # Update deployment info in .env
-            sed -i '/DEPLOY_TIMESTAMP/d' .env || true
-            sed -i '/DEPLOY_USER/d' .env || true
+            grep -v "DEPLOY_TIMESTAMP" .env > .env.tmp || true
+            grep -v "DEPLOY_USER" .env.tmp > .env || true
             echo "DEPLOY_TIMESTAMP=${DEPLOY_TIMESTAMP}" >> .env
             echo "DEPLOY_USER=${DEPLOY_USER}" >> .env
+            rm -f .env.tmp
+            
+            # Create necessary directories if they don't exist
+            mkdir -p public/css public/js src
             
             # Install dependencies
             echo "Installing dependencies..."
