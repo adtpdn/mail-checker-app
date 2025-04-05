@@ -32,6 +32,48 @@ jobs:
             UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
 
+      - name: Create deployment directory and set correct permissions
+        env:
+          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
+          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
+          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/var/www/mail-checker' }}
+        run: |
+          # Create proper directory structure and set permissions first
+          ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} << 'EOF'
+            # Create deployment directory if it doesn't exist
+            sudo mkdir -p ${DEPLOY_PATH}
+            
+            # Fix ownership to ensure current user can write to it
+            sudo chown -R $(whoami):$(whoami) ${DEPLOY_PATH}
+            
+            # Set proper permissions
+            sudo chmod -R 755 ${DEPLOY_PATH}
+            
+            # Create public directory if it doesn't exist
+            mkdir -p ${DEPLOY_PATH}/public
+            mkdir -p ${DEPLOY_PATH}/public/css
+            mkdir -p ${DEPLOY_PATH}/public/js
+            mkdir -p ${DEPLOY_PATH}/src
+            
+            echo "Deployment directory prepared with correct permissions"
+            EOF
+
+      - name: Back up environment file
+        env:
+          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
+          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
+          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/var/www/mail-checker' }}
+        run: |
+          # Backup .env file if it exists
+          ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} << 'EOF'
+            if [ -f ${DEPLOY_PATH}/.env ]; then
+              cp ${DEPLOY_PATH}/.env ${DEPLOY_PATH}/.env.backup
+              echo "Environment file backed up"
+            else
+              echo "No environment file found to back up"
+            fi
+          EOF
+
       - name: Deploy directly to Webdock
         env:
           WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
@@ -42,35 +84,50 @@ jobs:
           DEPLOY_TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
           DEPLOY_USER="${{ github.actor }}"
           
-          # Deploy to server using rsync
+          # Deploy to server using rsync with appropriate flags
           echo "Deploying code to Webdock..."
           rsync -avz --exclude='.git' --exclude='.github' --exclude='node_modules' \
-            --exclude='tests' --exclude='coverage' --delete \
+            --exclude='tests' --exclude='coverage' \
             ./ ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER}:${DEPLOY_PATH}/
+          
+          echo "Code transfer complete"
 
+      - name: Restore environment file and run post-deployment steps
+        env:
+          WEBDOCK_SERVER: ${{ secrets.WEBDOCK_SERVER }}
+          WEBDOCK_USERNAME: ${{ secrets.WEBDOCK_USERNAME }}
+          DEPLOY_PATH: ${{ secrets.WEBDOCK_DEPLOY_PATH || '/var/www/mail-checker' }}
+        run: |
+          DEPLOY_TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          DEPLOY_USER="${{ github.actor }}"
+          
           # Execute post-deploy commands
           ssh ${WEBDOCK_USERNAME}@${WEBDOCK_SERVER} << EOF
             cd ${DEPLOY_PATH}
             
-            # Update environment variables
-            if [ -f .env ]; then
-              # Update deployment info in .env
-              sed -i '/DEPLOY_TIMESTAMP/d' .env
-              sed -i '/DEPLOY_USER/d' .env
-              echo "DEPLOY_TIMESTAMP=${DEPLOY_TIMESTAMP}" >> .env
-              echo "DEPLOY_USER=${DEPLOY_USER}" >> .env
+            # Restore the .env file if backup exists
+            if [ -f .env.backup ]; then
+              cp .env.backup .env
+              rm .env.backup
+              echo "Environment file restored"
             else
               # Create .env if it doesn't exist
               echo "NODE_ENV=production" > .env
               echo "PORT=3000" >> .env
-              echo "DEPLOY_TIMESTAMP=${DEPLOY_TIMESTAMP}" >> .env
-              echo "DEPLOY_USER=${DEPLOY_USER}" >> .env
             fi
             
+            # Update deployment info in .env
+            sed -i '/DEPLOY_TIMESTAMP/d' .env || true
+            sed -i '/DEPLOY_USER/d' .env || true
+            echo "DEPLOY_TIMESTAMP=${DEPLOY_TIMESTAMP}" >> .env
+            echo "DEPLOY_USER=${DEPLOY_USER}" >> .env
+            
             # Install dependencies
+            echo "Installing dependencies..."
             npm ci --production
             
             # Restart the application using PM2
+            echo "Restarting application..."
             if pm2 list | grep -q "mail-checker"; then
               pm2 reload mail-checker --update-env
             else
